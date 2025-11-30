@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-Este script es la versión 5 y FINAL de la Fase 1.
+Este script es la versión 5 y FINAL de la Fase 1 + INICIO FASE 2.
 Características:
 1. Carga la base de conocimiento desde un archivo JSON externo ('base_conocimiento.json').
 2. Implementa Autenticación Básica (Basic Auth) para proteger la API.
 3. Mantiene la lógica del Sistema Experto.
+4. [NUEVO] Implementa endpoint de recolección de datos para entrenamiento (Fase 2).
 
 Autor: Tu Nombre/Nombre del Proyecto
 Fecha: 20/10/2025
@@ -14,24 +15,58 @@ from flask import Flask, request, jsonify, make_response
 from functools import wraps
 import json
 import os
-
+import csv
+from datetime import datetime
 import dotenv
+
 dotenv.load_dotenv()
+
+app = Flask(__name__)
+
+# --- CONFIGURACIÓN DE SEGURIDAD ---
+# En producción, estas credenciales deberían estar en variables de entorno.
 
 AUTH_USERNAME = os.getenv("AUTH_USERNAME")
 AUTH_PASSWORD = os.getenv("AUTH_PASSWORD")
 
-app = Flask(__name__)
+# --- FASE 2: CONFIGURACIÓN DE RECOLECCIÓN DE DATOS ---
+ARCHIVO_ENTRENAMIENTO = 'datos_entrenamiento_fase2.csv'
 
+def inicializar_archivo_entrenamiento():
+    """
+    Crea el archivo CSV con cabeceras si no existe.
+    Este archivo acumulará la 'sabiduría' del mundo real para entrenar la IA futura.
+    """
+    if not os.path.exists(ARCHIVO_ENTRENAMIENTO):
+        try:
+            with open(ARCHIVO_ENTRENAMIENTO, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                writer.writerow([
+                    'fecha_reporte',
+                    'usuario_id_hash',      # Identificador anónimo del usuario
+                    'modelo_id',            # Ej: Bajaj_Pulsar_NS200
+                    'componente_id',        # Ej: bujias
+                    'accion_realizada',     # Ej: REEMPLAZAR
+                    'km_recomendacion_app', # Qué dijo el manual (Fase 1)
+                    'km_realizado_usuario', # Qué hizo el usuario (Realidad)
+                    'condicion_reportada'   # ¡EL DATO CLAVE! (ej: "muy_desgastado", "normal")
+                ])
+            print(f"-> Archivo de entrenamiento '{ARCHIVO_ENTRENAMIENTO}' creado exitosamente.")
+        except Exception as e:
+            print(f"Error al crear archivo de entrenamiento: {e}")
 
-# --- CARGA DE DATOS ---
+# Inicializamos el sistema de almacenamiento al arrancar
+inicializar_archivo_entrenamiento()
+
+# --- CARGA DE DATOS (FASE 1) ---
 def cargar_base_conocimiento():
     """Carga los datos desde el archivo JSON."""
-    jsonData = 'base.json'
-    if not os.path.exists(jsonData):
-        print(f"Error Crítico: No se encontró {jsonData}")
+    nombre_archivo = 'base_conocimiento.json'
+    if not os.path.exists(nombre_archivo):
+        print(f"Error Crítico: No se encontró {nombre_archivo}")
         return {}
-    with open(jsonData, 'r', encoding='utf-8') as f:
+    
+    with open(nombre_archivo, 'r', encoding='utf-8') as f:
         return json.load(f)
 
 # Cargamos los datos al iniciar el servidor
@@ -98,10 +133,10 @@ def calcular_probabilidad_mantenimiento(perfil_moto, kilometraje_actual):
 @app.route('/')
 def home():
     """Ruta simple para verificar que el servidor corre."""
-    return "Servidor de Mantenimiento Motos IA (v5) - Activo y Protegido."
+    return "Servidor de Mantenimiento Motos IA (v5 + Fase 2) - Activo y Protegido."
 
 @app.route('/predict', methods=['POST'])
-@auth_required
+@auth_required  # Endpoint de Fase 1: Predicción basada en reglas
 def predict_maintenance():
     try:
         data = request.get_json()
@@ -133,6 +168,57 @@ def predict_maintenance():
 
     except Exception as e:
         return jsonify({"error": f"Error interno: {str(e)}"}), 500
+
+@app.route('/reportar_mantenimiento', methods=['POST'])
+@auth_required  # Endpoint de Fase 2: Recolección de Datos Reales
+def reportar_mantenimiento():
+    """
+    Este endpoint recibe el feedback real cuando un usuario completa un mantenimiento.
+    Guarda la información en un CSV para el futuro entrenamiento de Machine Learning.
+    
+    JSON Esperado:
+    {
+        "usuario_id_hash": "user_123_abc",
+        "modelo_id": "Bajaj_Pulsar_NS200",
+        "componente_id": "bujias",
+        "accion_realizada": "REEMPLAZAR",
+        "km_recomendacion_app": 10000,
+        "km_realizado_usuario": 10250,
+        "condicion_reportada": "muy_desgastado" 
+    }
+    """
+    try:
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({"error": "Cuerpo de solicitud vacío"}), 400
+
+        # Validar campos mínimos necesarios para un dato de entrenamiento útil
+        campos_requeridos = ['usuario_id_hash', 'modelo_id', 'componente_id', 'km_realizado_usuario', 'condicion_reportada']
+        if not all(k in data for k in campos_requeridos):
+            return jsonify({"error": f"Faltan campos requeridos. Necesarios: {campos_requeridos}"}), 400
+
+        # Guardar en el archivo de entrenamiento (CSV)
+        with open(ARCHIVO_ENTRENAMIENTO, 'a', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                datetime.now().isoformat(),
+                data['usuario_id_hash'],
+                data['modelo_id'],
+                data['componente_id'],
+                data.get('accion_realizada', 'DESCONOCIDA'),
+                data.get('km_recomendacion_app', 0),
+                data['km_realizado_usuario'],
+                data['condicion_reportada'] # Este será nuestro 'target' o etiqueta para la IA
+            ])
+            
+        return jsonify({
+            "status": "success",
+            "mensaje": "Datos de entrenamiento guardados exitosamente. ¡Gracias por contribuir a la IA!"
+        }), 201
+
+    except Exception as e:
+        return jsonify({"error": f"Error al guardar datos de entrenamiento: {str(e)}"}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)

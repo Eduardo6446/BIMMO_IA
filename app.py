@@ -2,10 +2,9 @@
 """
 Este script es la versión 5 y FINAL de la Fase 1 + INICIO FASE 2.
 Características:
-1. Carga la base de conocimiento desde un archivo JSON externo ('base_conocimiento.json').
-2. Implementa Autenticación Básica (Basic Auth) para proteger la API.
-3. Mantiene la lógica del Sistema Experto.
-4. [NUEVO] Implementa endpoint de recolección de datos para entrenamiento (Fase 2).
+1. Carga la base de conocimiento desde 'base_conocimiento.json'.
+2. Seguridad: Implementa Basic Auth usando variables de entorno (.env).
+3. Datos: Implementa recolección de datos en JSON Lines (.jsonl) para flexibilidad.
 
 Autor: Tu Nombre/Nombre del Proyecto
 Fecha: 20/10/2025
@@ -15,48 +14,22 @@ from flask import Flask, request, jsonify, make_response
 from functools import wraps
 import json
 import os
-import csv
 from datetime import datetime
-import dotenv
+from dotenv import load_dotenv # Importamos la librería para leer .env
 
-dotenv.load_dotenv()
+# 1. Cargar variables de entorno desde el archivo .env
+load_dotenv()
 
 app = Flask(__name__)
 
 # --- CONFIGURACIÓN DE SEGURIDAD ---
-# En producción, estas credenciales deberían estar en variables de entorno.
+# Ahora leemos las credenciales del entorno. Si no existen, usamos valores por defecto seguros o fallamos.
+AUTH_USERNAME = os.getenv("AUTH_USERNAME", "admin_fallback")
+AUTH_PASSWORD = os.getenv("AUTH_PASSWORD", "secure_password_fallback")
 
-AUTH_USERNAME = os.getenv("AUTH_USERNAME")
-AUTH_PASSWORD = os.getenv("AUTH_PASSWORD")
-
-# --- FASE 2: CONFIGURACIÓN DE RECOLECCIÓN DE DATOS ---
-ARCHIVO_ENTRENAMIENTO = 'datos_entrenamiento_fase2.csv'
-
-def inicializar_archivo_entrenamiento():
-    """
-    Crea el archivo CSV con cabeceras si no existe.
-    Este archivo acumulará la 'sabiduría' del mundo real para entrenar la IA futura.
-    """
-    if not os.path.exists(ARCHIVO_ENTRENAMIENTO):
-        try:
-            with open(ARCHIVO_ENTRENAMIENTO, 'w', newline='', encoding='utf-8') as f:
-                writer = csv.writer(f)
-                writer.writerow([
-                    'fecha_reporte',
-                    'usuario_id_hash',      # Identificador anónimo del usuario
-                    'modelo_id',            # Ej: Bajaj_Pulsar_NS200
-                    'componente_id',        # Ej: bujias
-                    'accion_realizada',     # Ej: REEMPLAZAR
-                    'km_recomendacion_app', # Qué dijo el manual (Fase 1)
-                    'km_realizado_usuario', # Qué hizo el usuario (Realidad)
-                    'condicion_reportada'   # ¡EL DATO CLAVE! (ej: "muy_desgastado", "normal")
-                ])
-            print(f"-> Archivo de entrenamiento '{ARCHIVO_ENTRENAMIENTO}' creado exitosamente.")
-        except Exception as e:
-            print(f"Error al crear archivo de entrenamiento: {e}")
-
-# Inicializamos el sistema de almacenamiento al arrancar
-inicializar_archivo_entrenamiento()
+# --- FASE 2: CONFIGURACIÓN DE DATOS (JSONL) ---
+# Mantenemos .jsonl porque es superior para datos que pueden cambiar de estructura
+ARCHIVO_ENTRENAMIENTO = 'datos_entrenamiento_fase2.jsonl'
 
 # --- CARGA DE DATOS (FASE 1) ---
 def cargar_base_conocimiento():
@@ -69,17 +42,14 @@ def cargar_base_conocimiento():
     with open(nombre_archivo, 'r', encoding='utf-8') as f:
         return json.load(f)
 
-# Cargamos los datos al iniciar el servidor
 datos_motos = cargar_base_conocimiento()
 print(f"Base de conocimiento cargada: {len(datos_motos)} modelos disponibles.")
+print(f"Modo de autenticación activo para usuario: {AUTH_USERNAME}")
 
 
 # --- DECORADOR DE AUTENTICACIÓN ---
 def auth_required(f):
-    """
-    Decorador para proteger las rutas con Basic Auth.
-    Verifica si la solicitud tiene el header 'Authorization' correcto.
-    """
+    """Protege las rutas verificando User/Pass contra las variables de entorno."""
     @wraps(f)
     def decorated(*args, **kwargs):
         auth = request.authorization
@@ -95,7 +65,6 @@ def seleccionar_perfil_moto(modelo_buscado, cilindrada):
     if modelo_buscado in datos_motos:
         return modelo_buscado
     else:
-        # Fallback inteligente
         if cilindrada <= 150:
             return "Generica_Trabajo_150cc"
         else:
@@ -132,30 +101,24 @@ def calcular_probabilidad_mantenimiento(perfil_moto, kilometraje_actual):
 
 @app.route('/')
 def home():
-    """Ruta simple para verificar que el servidor corre."""
-    return "Servidor de Mantenimiento Motos IA (v5 + Fase 2) - Activo y Protegido."
+    return "Servidor de Mantenimiento Motos IA (v5 Safe) - Activo."
 
 @app.route('/predict', methods=['POST'])
-@auth_required  # Endpoint de Fase 1: Predicción basada en reglas
+@auth_required
 def predict_maintenance():
     try:
         data = request.get_json()
-        
-        # Validaciones
-        if not data:
-            return jsonify({"error": "Cuerpo de solicitud vacío"}), 400
+        if not data: return jsonify({"error": "Cuerpo vacío"}), 400
             
         modelo_id = data.get('modelo_id')
         cilindrada = data.get('cilindrada')
         km_actual = data.get('km_actual')
 
         if not all([modelo_id, cilindrada, km_actual is not None]):
-            return jsonify({"error": "Faltan datos: modelo_id, cilindrada, km_actual"}), 400
+            return jsonify({"error": "Faltan datos requeridos"}), 400
         
-        # Ejecución
         perfil_seleccionado = seleccionar_perfil_moto(modelo_id, int(cilindrada))
         recomendaciones = calcular_probabilidad_mantenimiento(perfil_seleccionado, int(km_actual))
-        
         info_moto_usada = datos_motos[perfil_seleccionado]['info_moto']
 
         return jsonify({
@@ -165,60 +128,32 @@ def predict_maintenance():
             "km_analizado": km_actual,
             "recomendaciones": recomendaciones
         }), 200
-
     except Exception as e:
-        return jsonify({"error": f"Error interno: {str(e)}"}), 500
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/reportar_mantenimiento', methods=['POST'])
-@auth_required  # Endpoint de Fase 2: Recolección de Datos Reales
+@auth_required
 def reportar_mantenimiento():
-    """
-    Este endpoint recibe el feedback real cuando un usuario completa un mantenimiento.
-    Guarda la información en un CSV para el futuro entrenamiento de Machine Learning.
-    
-    JSON Esperado:
-    {
-        "usuario_id_hash": "user_123_abc",
-        "modelo_id": "Bajaj_Pulsar_NS200",
-        "componente_id": "bujias",
-        "accion_realizada": "REEMPLAZAR",
-        "km_recomendacion_app": 10000,
-        "km_realizado_usuario": 10250,
-        "condicion_reportada": "muy_desgastado" 
-    }
-    """
+    """Guarda reporte en JSONL (Append Mode)."""
     try:
         data = request.get_json()
-        
-        if not data:
-            return jsonify({"error": "Cuerpo de solicitud vacío"}), 400
+        if not data: return jsonify({"error": "Cuerpo vacío"}), 400
 
-        # Validar campos mínimos necesarios para un dato de entrenamiento útil
-        campos_requeridos = ['usuario_id_hash', 'modelo_id', 'componente_id', 'km_realizado_usuario', 'condicion_reportada']
+        campos_requeridos = ['usuario_id_hash', 'modelo_id', 'componente_id', 'condicion_reportada']
         if not all(k in data for k in campos_requeridos):
-            return jsonify({"error": f"Faltan campos requeridos. Necesarios: {campos_requeridos}"}), 400
+            return jsonify({"error": f"Faltan campos: {campos_requeridos}"}), 400
 
-        # Guardar en el archivo de entrenamiento (CSV)
-        with open(ARCHIVO_ENTRENAMIENTO, 'a', newline='', encoding='utf-8') as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                datetime.now().isoformat(),
-                data['usuario_id_hash'],
-                data['modelo_id'],
-                data['componente_id'],
-                data.get('accion_realizada', 'DESCONOCIDA'),
-                data.get('km_recomendacion_app', 0),
-                data['km_realizado_usuario'],
-                data['condicion_reportada'] # Este será nuestro 'target' o etiqueta para la IA
-            ])
+        registro = data.copy()
+        registro['fecha_servidor'] = datetime.now().isoformat()
+
+        # Guardamos en JSONL
+        with open(ARCHIVO_ENTRENAMIENTO, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(registro) + "\n")
             
-        return jsonify({
-            "status": "success",
-            "mensaje": "Datos de entrenamiento guardados exitosamente. ¡Gracias por contribuir a la IA!"
-        }), 201
+        return jsonify({"status": "success", "mensaje": "Dato guardado."}), 201
 
     except Exception as e:
-        return jsonify({"error": f"Error al guardar datos de entrenamiento: {str(e)}"}), 500
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)

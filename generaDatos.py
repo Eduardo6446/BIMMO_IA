@@ -17,8 +17,8 @@ from datetime import datetime, timedelta
 
 # --- CONFIGURACIÓN ---
 CANTIDAD_REGISTROS = 20000 
-ARCHIVO_SALIDA = 'datos_entrenamiento_fase2.jsonl'
-ARCHIVO_BASE_CONOCIMIENTO = 'base_conocimiento.json'
+ARCHIVO_SALIDA = 'datos_entrenamiento_fasev3.jsonl'
+ARCHIVO_BASE_CONOCIMIENTO = 'base.json'
 
 def cargar_base_conocimiento():
     """Carga el archivo JSON de las motos."""

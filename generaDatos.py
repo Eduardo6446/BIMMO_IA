@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 # Configuración
 CANTIDAD_REGISTROS = 15000  # ¡Cambia esto si quieres más datos!
 ARCHIVO_SALIDA = 'datos_entrenamiento_fase2.jsonl'
-ARCHIVO_BASE_CONOCIMIENTO = 'base_conocimiento.json'
+ARCHIVO_BASE_CONOCIMIENTO = 'base.json'
 
 # Posibles condiciones reportadas por el usuario
 CONDICIONES = ["como_nuevo", "desgaste_normal", "muy_desgastado", "fallo_critico"]

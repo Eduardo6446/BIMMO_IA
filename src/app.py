@@ -22,24 +22,27 @@ app = Flask(__name__)
 
 AUTH_USERNAME = os.getenv("AUTH_USERNAME", "admin")
 AUTH_PASSWORD = os.getenv("AUTH_PASSWORD", "secret")
-ARCHIVO_ENTRENAMIENTO = 'datos_entrenamiento_fasev3.jsonl'
+ARCHIVO_ENTRENAMIENTO = '../data/datos_entrenamiento_fasev3.jsonl'
 
 # --- CARGAR IA ---
-print("⏳ Cargando cerebro digital...")
+print("\n⏳ Cargando Librerias y modelos\n")
+
 try:
-    model = tf.keras.models.load_model('modelo_mantenimiento_v1.h5')
-    scaler_km = joblib.load('scaler_km.pkl')
-    le_condicion = joblib.load('encoder_condicion.pkl')
-    feature_columns = joblib.load('feature_columns.pkl')
-    print("✅ IA Cargada correctamente.")
+    model = tf.keras.models.load_model('../models/30112025e7OK/modelo_mantenimiento_v1.h5')
+    scaler_km = joblib.load('../models/30112025e7OK/scaler_km.pkl')
+    le_condicion = joblib.load('../models/30112025e7OK/encoder_condicion.pkl')
+    feature_columns = joblib.load('../models/30112025e7OK/feature_columns.pkl')
+    
+    print("✅ Librerias y modelos cargados correctamente.")
+    
 except Exception as e:
-    print(f"⚠️ Advertencia: No se cargó la IA ({e}). Se usará solo modo manual.")
+    print(f"\n⚠️ Advertencia: No se cargó la IA ({e}). Se usará solo modo manual.\n")
     model = None
 
 # --- CARGAR BASE DE DATOS ---
 def cargar_base_conocimiento():
-    if not os.path.exists('base_conocimiento.json'): return {}
-    with open('base_conocimiento.json', 'r', encoding='utf-8') as f:
+    if not os.path.exists('../data/base.json'): return {}
+    with open('../data/base.json', 'r', encoding='utf-8') as f:
         return json.load(f)
 
 datos_motos = cargar_base_conocimiento()
@@ -150,36 +153,94 @@ def auth_required(f):
 
 @app.route('/predict', methods=['POST'])
 #@auth_required
+# def predict():
+#     try:
+#         # Usamos force=True para evitar el error 415 si faltan headers
+#         data = request.get_json(force=True) 
+#         mod_id = data.get('modelo_id')
+#         cil = data.get('cilindrada')
+#         km = data.get('km_actual')
+        
+#         # Recibimos el historial como una lista de objetos y lo convertimos a diccionario para búsqueda rápida
+#         # Entrada: [ {"componente_id": "aceite", "km_mantenimiento": 1000} ]
+#         # Salida:  { "aceite": 1000 }
+#         historial_raw = data.get('historial_usuario', [])
+#         historial_dict = { item['componente_id']: item['km_mantenimiento'] for item in historial_raw }
+        
+#         perfil = mod_id if mod_id in datos_motos else ("Generica_Trabajo_150cc" if int(cil) <= 150 else "Generica_Urbana_250cc")
+        
+#         recomendaciones = analizar_mantenimiento_completo(perfil, int(km), historial_dict)
+        
+#         return jsonify({
+#             "status": "success",
+#             "moto_analizada": perfil,
+#             "analisis": recomendaciones
+#         })
+#     except Exception as e:
+#         return jsonify({"error": str(e)}), 500
+
+@app.route('/predict', methods=['POST'])
 def predict():
+    if not model:
+        return jsonify({"error": "La IA no está disponible."}), 500
+
     try:
-        # Usamos force=True para evitar el error 415 si faltan headers
-        data = request.get_json(force=True) 
-        mod_id = data.get('modelo_id')
-        cil = data.get('cilindrada')
-        km = data.get('km_actual')
+        # 1. Obtener datos (Formato Simple)
+        # Esperamos: {"modelo": "Bajaj...", "componente": "bujias", "km": 12500}
+        data = request.get_json(force=True)
         
-        # Recibimos el historial como una lista de objetos y lo convertimos a diccionario para búsqueda rápida
-        # Entrada: [ {"componente_id": "aceite", "km_mantenimiento": 1000} ]
-        # Salida:  { "aceite": 1000 }
-        historial_raw = data.get('historial_usuario', [])
-        historial_dict = { item['componente_id']: item['km_mantenimiento'] for item in historial_raw }
+        modelo_nombre = data.get('modelo')
+        componente_nombre = data.get('componente')
+        km_usuario = data.get('km')
+
+        if not all([modelo_nombre, componente_nombre, km_usuario is not None]):
+            return jsonify({"error": "Faltan datos. Enviar: modelo, componente, km"}), 400
+
+        # 2. Construir Vector One-Hot (Igual que en Colab Celda 8)
+        input_vector = np.zeros(len(feature_columns))
         
-        perfil = mod_id if mod_id in datos_motos else ("Generica_Trabajo_150cc" if int(cil) <= 150 else "Generica_Urbana_250cc")
+        col_modelo = f"modelo_id_{modelo_nombre}"
+        col_componente = f"componente_id_{componente_nombre}"
         
-        recomendaciones = analizar_mantenimiento_completo(perfil, int(km), historial_dict)
+        # Activar interruptores si existen en el mapa
+        if col_modelo in feature_columns:
+            input_vector[feature_columns.index(col_modelo)] = 1
         
+        if col_componente in feature_columns:
+            input_vector[feature_columns.index(col_componente)] = 1
+
+        # 3. Escalar Kilometraje
+        km_scl = scaler_km.transform(np.array([[float(km_usuario)]]))[0][0]
+        
+        # 4. Unir todo para la red neuronal
+        final_features = np.hstack(([km_scl], input_vector)).reshape(1, -1)
+        
+        # 5. Predecir
+        prediccion = model.predict(final_features, verbose=0)
+        
+        # 6. Interpretar
+        clase_ganadora = np.argmax(prediccion)
+        estado_texto = le_condicion.inverse_transform([clase_ganadora])[0]
+        confianza = float(np.max(prediccion)) * 100
+
         return jsonify({
             "status": "success",
-            "moto_analizada": perfil,
-            "analisis": recomendaciones
+            "modelo": modelo_nombre,
+            "componente": componente_nombre,
+            "km_analizado": km_usuario,
+            "prediccion_ia": estado_texto,
+            "confianza": f"{confianza:.2f}%"
         })
+
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": f"Error interno: {str(e)}"}), 500
 
 @app.route('/reportar_mantenimiento', methods=['POST'])
 @auth_required
 def reportar():
     try:
+        os.makedirs(os.path.dirname(ARCHIVO_ENTRENAMIENTO), exist_ok=True)
+         
         # Usamos force=True aquí también
         data = request.get_json(force=True)
         registro = data.copy()
@@ -189,6 +250,11 @@ def reportar():
         return jsonify({"status": "saved"}), 201
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+    
+# saludo
+@app.route('/', methods=['GET'])
+def home():
+    return "Servidor de Mantenimiento de Motos con IA y Historial - En línea"
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    app.run()

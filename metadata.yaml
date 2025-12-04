@@ -1,0 +1,19 @@
+version: 1.0.0
+status: production
+author: Equipo MotoIA
+created_at: 2025-12-01T12:34:56.789012
+model_type: Deep Neural Network (TensorFlow/Keras)
+training_params:
+  epochs: 300
+  batch_size: 64
+  optimizer: adam
+  loss: sparse_categorical_crossentropy
+metrics:
+  accuracy_aprox: "0.78-0.80"
+  description: Precisión alcanzada en validación durante entrenamiento v6
+artifacts:
+  - modelo_mantenimiento_v1.h5
+  - encoder_condicion.pkl
+  - scaler_km.pkl
+  - feature_columns.pkl
+input_features: One-Hot Encoding (Modelo + Componente) + Scaled KM

@@ -22,7 +22,7 @@ app = Flask(__name__)
 
 AUTH_USERNAME = os.getenv("AUTH_USERNAME")
 AUTH_PASSWORD = os.getenv("AUTH_PASSWORD")
-ARCHIVO_ENTRENAMIENTO = '../data/datos_entrenamiento_fasev3.jsonl'
+ARCHIVO_ENTRENAMIENTO = '../data/datos_usuarios.jsonl'
 
 # --- CARGAR IA ---
 print("\n⏳ Cargando Librerias y modelos\n")
@@ -271,7 +271,7 @@ def reportar():
         ahora = datetime.now().isoformat()
         
         registro_ordenado = {
-            "fecha_reporte": ahora,
+            "fecha_reporte": now_iso(), # Función auxiliar o repetimos ahora
             "usuario_id_hash": usuario_id_hash,
             "modelo_id": modelo_id,
             "componente_id": componente_id,
@@ -279,7 +279,6 @@ def reportar():
             "km_recomendacion_app": km_teorico,
             "km_realizado_usuario": km_realizado,
             "condicion_reportada": condicion_reportada,
-            "fecha_servidor": now_iso() # Función auxiliar o repetimos ahora
         }
         # Nota: usé la misma variable 'ahora' para fecha_reporte y fecha_servidor por consistencia,
         # pero puedes generar una nueva si quieres microsegundos de diferencia.
@@ -294,6 +293,52 @@ def reportar():
 
     except Exception as e:
         print(f"Error guardando reporte: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/actualizar_kilometraje', methods=['POST'])
+@auth_required
+def actualizar_kilometraje():
+    """
+    Registra solo el avance del odómetro (sin mantenimiento).
+    Útil para que la IA sepa el ritmo de uso de la moto.
+    """
+    try:
+        data = request.get_json(force=True, silent=True)
+        if not data: return jsonify({"error": "JSON vacío"}), 400
+
+        # 1. Extraer datos
+        usuario_id_hash = data.get('usuario_id_hash')
+        modelo_id = data.get('modelo_id')
+        km_actual = data.get('km_actual')
+
+        if not all([modelo_id, km_actual is not None]):
+             return jsonify({"error": "Faltan datos: modelo_id, km_actual"}), 400
+
+        # 2. Construir Registro (Compatible con el dataset de entrenamiento)
+        ahora = datetime.now().isoformat()
+        
+        registro_ordenado = {
+            "fecha_reporte": ahora,
+            "usuario_id_hash": usuario_id_hash,
+            "modelo_id": modelo_id,
+            "componente_id": "N/A",           # No aplica a una pieza específica
+            "accion_realizada": "ACTUALIZACION_KM", # Marcador especial
+            "km_recomendacion_app": 0,        # No hay recomendación aquí
+            "km_realizado_usuario": km_actual,
+            "condicion_reportada": "operativo", # Asumimos que sigue rodando
+            "fecha_servidor": now_iso()
+        }
+
+        # 3. Guardar
+        os.makedirs(os.path.dirname(ARCHIVO_ENTRENAMIENTO), exist_ok=True)
+        with open(ARCHIVO_ENTRENAMIENTO, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(registro_ordenado) + "\n")
+            
+        return jsonify({"status": "saved", "message": "Kilometraje registrado"}), 201
+
+    except Exception as e:
+        print(f"Error actualizando km: {e}")
         return jsonify({"error": str(e)}), 500
 
 def now_iso():

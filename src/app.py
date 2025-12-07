@@ -20,8 +20,8 @@ from datetime import datetime
 load_dotenv()
 app = Flask(__name__)
 
-AUTH_USERNAME = os.getenv("AUTH_USERNAME", "admin")
-AUTH_PASSWORD = os.getenv("AUTH_PASSWORD", "secret")
+AUTH_USERNAME = os.getenv("AUTH_USERNAME")
+AUTH_PASSWORD = os.getenv("AUTH_PASSWORD")
 ARCHIVO_ENTRENAMIENTO = '../data/datos_entrenamiento_fasev3.jsonl'
 
 # --- CARGAR IA ---
@@ -151,7 +151,7 @@ def auth_required(f):
         return make_response('Login Required', 401, {'WWW-Authenticate': 'Basic'})
     return decorated
 
-@app.route('/predict', methods=['POST'])
+#@app.route('/predict', methods=['POST'])
 #@auth_required
 # def predict():
 #     try:
@@ -180,6 +180,7 @@ def auth_required(f):
 #         return jsonify({"error": str(e)}), 500
 
 @app.route('/predict', methods=['POST'])
+@auth_required
 def predict():
     if not model:
         return jsonify({"error": "La IA no está disponible."}), 500
@@ -238,18 +239,65 @@ def predict():
 @app.route('/reportar_mantenimiento', methods=['POST'])
 @auth_required
 def reportar():
+    """
+    Guarda datos enriquecidos con la lógica del manual en un orden específico.
+    """
     try:
+        data = request.get_json(force=True, silent=True)
+        if not data: return jsonify({"error": "JSON vacío"}), 400
+
+        # 1. Extraer datos del request
+        usuario_id_hash = data.get('usuario_id_hash')
+        modelo_id = data.get('modelo_id')
+        componente_id = data.get('componente_id')
+        accion_realizada = data.get('accion_realizada', 'REEMPLAZAR') # Valor por defecto
+        km_realizado = data.get('km_realizado_usuario')
+        condicion_reportada = data.get('condicion_reportada')
+
+        # 2. Calcular KM Recomendado (Lógica de Negocio)
+        km_teorico = 0
+        if modelo_id in datos_motos:
+            tareas = datos_motos[modelo_id].get('tareas_mantenimiento', [])
+            tarea = next((t for t in tareas if t['componente_id'] == componente_id), None)
+            
+            if tarea and 'intervalo' in tarea:
+                intervalo = tarea['intervalo'].get('kilometros', 0)
+                if intervalo > 0 and km_realizado:
+                    ciclo = round(km_realizado / intervalo)
+                    if ciclo < 1: ciclo = 1
+                    km_teorico = intervalo * ciclo
+
+        # 3. Construir Diccionario Ordenado (Para que el JSONL quede bonito)
+        ahora = datetime.now().isoformat()
+        
+        registro_ordenado = {
+            "fecha_reporte": ahora,
+            "usuario_id_hash": usuario_id_hash,
+            "modelo_id": modelo_id,
+            "componente_id": componente_id,
+            "accion_realizada": accion_realizada,
+            "km_recomendacion_app": km_teorico,
+            "km_realizado_usuario": km_realizado,
+            "condicion_reportada": condicion_reportada,
+            "fecha_servidor": now_iso() # Función auxiliar o repetimos ahora
+        }
+        # Nota: usé la misma variable 'ahora' para fecha_reporte y fecha_servidor por consistencia,
+        # pero puedes generar una nueva si quieres microsegundos de diferencia.
+        registro_ordenado['fecha_servidor'] = datetime.now().isoformat()
+
+        # 4. Guardar
         os.makedirs(os.path.dirname(ARCHIVO_ENTRENAMIENTO), exist_ok=True)
-         
-        # Usamos force=True aquí también
-        data = request.get_json(force=True)
-        registro = data.copy()
-        registro['fecha'] = datetime.now().isoformat()
         with open(ARCHIVO_ENTRENAMIENTO, 'a', encoding='utf-8') as f:
-            f.write(json.dumps(registro) + "\n")
-        return jsonify({"status": "saved"}), 201
+            f.write(json.dumps(registro_ordenado) + "\n")
+            
+        return jsonify({"status": "saved", "enriched_data": registro_ordenado}), 201
+
     except Exception as e:
+        print(f"Error guardando reporte: {e}")
         return jsonify({"error": str(e)}), 500
+
+def now_iso():
+    return datetime.now().isoformat()
     
 # saludo
 @app.route('/', methods=['GET'])

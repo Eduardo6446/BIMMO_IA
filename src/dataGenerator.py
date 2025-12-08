@@ -1,12 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-Script Generador de Datos Sintéticos V3 (MODO FÁCIL / DEMO).
-Este script genera 20,000 registros con reglas MATEMÁTICAS ESTRICTAS.
-Elimina la ambigüedad para que la IA pueda aprender fácilmente y alcanzar >90% de precisión.
-
-Uso:
-1. Asegúrate de tener 'base_conocimiento.json' en la misma carpeta.
-2. Ejecuta: python generador_datos_ficticios.py
+Script Generador de Datos Sintéticos V6 (Estrategia Balanceada).
+Mejora CRÍTICA: Elimina la simulación de perfiles de usuario que causaba
+un desbalance de clases (75% normal). Ahora fuerza una distribución
+perfecta (25% por clase) para que la IA aprenda a distinguir los casos raros.
 """
 
 import json
@@ -16,63 +13,82 @@ import os
 from datetime import datetime, timedelta
 
 # --- CONFIGURACIÓN ---
-CANTIDAD_REGISTROS = 20000 
-ARCHIVO_SALIDA = 'datos_entrenamiento_fasev3.jsonl'
-ARCHIVO_BASE_CONOCIMIENTO = 'base.json'
+CANTIDAD_REGISTROS = 50000 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ARCHIVO_SALIDA = os.path.join(BASE_DIR, '../data/datos_entrenamiento_fase5.jsonl')
+ARCHIVO_BASE_CONOCIMIENTO = os.path.join(BASE_DIR, '../data/base.json')
 
 def cargar_base_conocimiento():
-    """Carga el archivo JSON de las motos."""
+    print(ARCHIVO_BASE_CONOCIMIENTO)
     try:
         with open(ARCHIVO_BASE_CONOCIMIENTO, 'r', encoding='utf-8') as f:
             return json.load(f)
     except FileNotFoundError:
-        print(f"❌ Error: No se encontró {ARCHIVO_BASE_CONOCIMIENTO}.")
-        exit()
+        try:
+            with open('../data/base.json', 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            print(f"❌ Error: No se encontró base_conocimiento.json")
+            exit()
 
 def generar_fecha_aleatoria():
-    """Genera fecha reciente."""
     return datetime.now().isoformat()
 
-def simular_reporte_demo(moto_key, moto_data, usuario_id):
-    """Genera un reporte con lógica determinista (sin azar en la etiqueta)."""
+def simular_reporte_balanceado(moto_key, moto_data, usuario_id):
     tareas = moto_data.get("tareas_mantenimiento", [])
     if not tareas: return None
     
-    tarea = random.choice(tareas)
-    intervalo = tarea["intervalo"].get("kilometros")
+    # 1. Agrupar tareas por componente
+    tareas_por_comp = {}
+    for t in tareas:
+        comp_id = t["componente_id"]
+        intervalo = t["intervalo"].get("kilometros")
+        if intervalo:
+            if comp_id not in tareas_por_comp:
+                tareas_por_comp[comp_id] = []
+            tareas_por_comp[comp_id].append(t)
     
-    # Solo simulamos tareas basadas en kilometraje
-    if not intervalo: return None
+    if not tareas_por_comp: return None
 
-    # --- LÓGICA V3: REGLAS ESTRICTAS ---
-    # Generamos una variación amplia de uso (desde -50% hasta +100%)
-    variacion = random.uniform(-0.50, 1.0) 
+    # 2. Elegir componente y filtrar intervalo mayor (Fix Despegue)
+    comp_elegido = random.choice(list(tareas_por_comp.keys()))
+    posibles_tareas = tareas_por_comp[comp_elegido]
+    tarea = max(posibles_tareas, key=lambda x: x["intervalo"]["kilometros"])
+    intervalo_base = tarea["intervalo"]["kilometros"]
     
-    ciclo = random.randint(1, 2) # 1er o 2do cambio
-    km_objetivo = intervalo * ciclo
-    km_realizado = int(km_objetivo * (1 + variacion))
+    # 3. Generar Ciclos (1 a 8 cambios)
+    ciclo = random.randint(1, 8)
     
-    # Calculamos el Ratio (Qué tanto cumplió el usuario)
-    ratio = km_realizado / km_objetivo
+    # --- CAMBIO V6: INGENIERÍA INVERSA DESDE LA ETIQUETA ---
+    # En lugar de simular un usuario y ver qué pasa, elegimos qué queremos enseñar
+    # y generamos los datos matemáticos para que cuadren.
     
-    # --- REGLAS DURAS (Cero confusión para la IA) ---
-    # Esto facilita enormemente que la IA encuentre las fronteras exactas.
+    clases_posibles = ["como_nuevo", "desgaste_normal", "muy_desgastado", "fallo_critico"]
+    condicion_objetivo = random.choice(clases_posibles)
     
-    if ratio <= 0.90:
-        # Si lo cambia antes del 90% del tiempo -> COMO NUEVO
-        condicion = "como_nuevo"
+    # Definimos el ratio exacto según la clase que queremos forzar
+    if condicion_objetivo == "como_nuevo":
+        # Ratios bajos (ej. acaba de cambiarlo hace poco)
+        ratio = random.uniform(0.10, 0.90)
         
-    elif 0.90 < ratio <= 1.10:
-        # Si lo cambia en el tiempo correcto (+/- 10%) -> NORMAL
-        condicion = "desgaste_normal"
+    elif condicion_objetivo == "desgaste_normal":
+        # Ratios ideales
+        ratio = random.uniform(0.91, 1.10)
         
-    elif 1.10 < ratio <= 1.30:
-        # Si se pasa hasta un 30% -> MUY DESGASTADO
-        condicion = "muy_desgastado"
+    elif condicion_objetivo == "muy_desgastado":
+        # Se pasó un poco
+        ratio = random.uniform(1.11, 1.30)
         
-    else: # ratio > 1.30
-        # Si se pasa más del 30% -> FALLO CRÍTICO
-        condicion = "fallo_critico"
+    else: # fallo_critico
+        # Se pasó bastante (hasta el doble del intervalo a veces)
+        ratio = random.uniform(1.31, 2.00)
+
+    # 4. Calcular Kilometraje Real Matemáticamente
+    # Formula: (Ciclos Completos * Intervalo) + (Fracción del Ciclo Actual * Intervalo)
+    km_realizado = int((intervalo_base * (ciclo - 1)) + (intervalo_base * ratio))
+    
+    # El "recomendado" siempre es el final del ciclo actual
+    km_objetivo = intervalo_base * ciclo
 
     return {
         "fecha_reporte": generar_fecha_aleatoria(),
@@ -82,35 +98,36 @@ def simular_reporte_demo(moto_key, moto_data, usuario_id):
         "accion_realizada": tarea["accion"],
         "km_recomendacion_app": km_objetivo,
         "km_realizado_usuario": km_realizado,
-        "condicion_reportada": condicion,
+        "condicion_reportada": condicion_objetivo, # Etiqueta perfectamente alineada
         "fecha_servidor": datetime.now().isoformat()
     }
 
 def main():
-    print("--- INICIANDO GENERADOR V3 (MODO DEMO) ---")
-    datos_motos = cargar_base_conocimiento()
-    keys_motos = list(datos_motos.keys())
+    print("--- GENERADOR V6: BALANCEO DE CLASES PERFECTO ---")
+    print("Generando dataset diseñado para romper el estancamiento del 75%...")
     
-    # Simulamos 200 usuarios
-    usuarios_ficticios = [uuid.uuid4().hex[:10] for _ in range(200)]
+    datos = cargar_base_conocimiento()
+    keys = list(datos.keys())
+    usuarios = [uuid.uuid4().hex[:8] for _ in range(500)]
     
-    print(f"🚀 Generando {CANTIDAD_REGISTROS} registros claros...")
+    os.makedirs(os.path.dirname(ARCHIVO_SALIDA), exist_ok=True)
     
     with open(ARCHIVO_SALIDA, 'w', encoding='utf-8') as f:
+        conteo_clases = {"como_nuevo": 0, "desgaste_normal": 0, "muy_desgastado": 0, "fallo_critico": 0}
+        
         for i in range(CANTIDAD_REGISTROS):
-            moto_key = random.choice(keys_motos)
-            usuario = random.choice(usuarios_ficticios)
-            
-            reporte = simular_reporte_demo(moto_key, datos_motos[moto_key], usuario)
-            
+            key = random.choice(keys)
+            reporte = simular_reporte_balanceado(key, datos[key], random.choice(usuarios))
             if reporte:
+                conteo_clases[reporte["condicion_reportada"]] += 1
                 f.write(json.dumps(reporte) + "\n")
-            
-            if (i+1) % 5000 == 0:
-                print(f"   -> {i+1} generados...")
+            if (i+1) % 5000 == 0: print(f"   -> {i+1} registros...")
 
-    print(f"\n✅ ¡LISTO! Archivo '{ARCHIVO_SALIDA}' generado.")
-    print("   Súbelo a Colab (borra el viejo primero) y vuelve a entrenar.")
+    print(f"✅ Listo: {ARCHIVO_SALIDA}")
+    print("📊 Distribución generada (debería ser ~25% c/u):")
+    for k, v in conteo_clases.items():
+        pct = (v / CANTIDAD_REGISTROS) * 100
+        print(f"   - {k}: {v} ({pct:.1f}%)")
 
 if __name__ == "__main__":
     main()

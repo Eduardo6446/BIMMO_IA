@@ -60,7 +60,7 @@ def construir_modelo_robusto(input_dim, num_classes):
         Dropout(0.3),
         
         Dense(16, activation='relu'),
-        
+    
         Dense(num_classes, activation='softmax')
     ])
     

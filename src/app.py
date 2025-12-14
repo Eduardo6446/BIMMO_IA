@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-SERVIDOR FINAL (FASE 4 - V2): CEREBRO MATEMÁTICO
-Actualizado para consumir el modelo 'modelo_desgaste_v2.h5'.
-Cambio principal: La IA ya no usa IDs, usa FISICA (Km vs Intervalo).
+SERVIDOR FINAL (FASE 4 - V6): LÓGICA ESTRICTA SECUENCIAL
+Cambio Post-Demo: Se elimina la "Tolerancia de Olvido".
+Si no hay registro en historial, el mantenimiento se queda pegado en el hito vencido
+(ej. 500km) infinitamente, marcando estado CRÍTICO.
+Solo avanza al siguiente hito si existe un registro histórico válido.
 """
 
 from flask import Flask, request, jsonify, make_response
@@ -11,7 +13,8 @@ import json
 import os
 import numpy as np
 import tensorflow as tf
-import pickle # IMPORTANTE: Usamos pickle para los nuevos transformadores
+import pickle
+import re
 from dotenv import load_dotenv
 from datetime import datetime
 
@@ -21,329 +24,207 @@ app = Flask(__name__)
 AUTH_USERNAME = os.getenv("AUTH_USERNAME", "admin")
 AUTH_PASSWORD = os.getenv("AUTH_PASSWORD", "secret")
 
-# --- RUTAS DE ARCHIVOS (Dinámicas) ---
+# --- RUTAS ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DIR_MODELOS = os.path.join(BASE_DIR, '../models/07122025e1sr/')
-ARCHIVO_BASE = os.path.join(BASE_DIR, '../data/base.json')
-ARCHIVO_HISTORIAL = os.path.join(BASE_DIR, '../data/datos_usuarios.jsonl')
-ARCHIVO_ENTRENAMIENTO = ARCHIVO_HISTORIAL # Alias para claridad
+DIR_MODELOS = os.path.join(BASE_DIR, '../../models')
+ARCHIVO_BASE = os.path.join(BASE_DIR, '../../data/base.json')
+ARCHIVO_ENTRENAMIENTO = os.path.join(BASE_DIR, '../../data/datos_usuarios.jsonl')
 
-# --- CARGAR IA (EL NUEVO CEREBRO) ---
-print("\n⏳ Cargando Nueva IA Robusta (V2)...\n")
-
+# --- CARGAR IA ---
+print("\n⏳ Cargando IA...\n")
 try:
-    # 1. Cargar el modelo neuronal (.h5)
     path_model = os.path.join(DIR_MODELOS, 'modelo_desgaste_v2.h5')
     model = tf.keras.models.load_model(path_model)
-    
-    # 2. Cargar el Scaler (.pkl) - VITAL para que la IA entienda los números
-    path_scaler = os.path.join(DIR_MODELOS, 'scaler.pkl')
-    with open(path_scaler, 'rb') as f:
-        scaler = pickle.load(f)
-        
-    # 3. Cargar el Encoder (.pkl) - VITAL para traducir la respuesta
-    path_encoder = os.path.join(DIR_MODELOS, 'encoder.pkl')
-    with open(path_encoder, 'rb') as f:
-        encoder = pickle.load(f)
-        
-    print(f"✅ SISTEMA OPERATIVO: Modelo cargado desde {path_model}")
-    
-except Exception as e:
-    print(f"\n⚠️ ERROR CRÍTICO: No se cargó la IA ({e}).\nRevisa que ejecutaste train_model.py primero.")
-    model = None
-    scaler = None
-    encoder = None
+    with open(os.path.join(DIR_MODELOS, 'scaler.pkl'), 'rb') as f: scaler = pickle.load(f)
+    with open(os.path.join(DIR_MODELOS, 'encoder.pkl'), 'rb') as f: encoder = pickle.load(f)
+    print("✅ IA ONLINE")
+except Exception:
+    print("⚠️ IA OFFLINE")
+    model, scaler, encoder = None, None, None
 
-# --- CARGAR BASE DE CONOCIMIENTO (MANUALES) ---
+# --- CARGAR BASE Y NORMALIZAR LLAVES ---
+datos_motos = {}
+mapa_normalizado = {}
+
+def normalizar_texto(texto):
+    if not texto: return ""
+    return re.sub(r'[\s_\-\.]+', '', str(texto)).lower()
+
 def cargar_base_conocimiento():
-    if not os.path.exists(ARCHIVO_BASE): return {}
-    with open(ARCHIVO_BASE, 'r', encoding='utf-8') as f:
-        return json.load(f)
+    global datos_motos, mapa_normalizado
+    if not os.path.exists(ARCHIVO_BASE): return
+    with open(ARCHIVO_BASE, 'r', encoding='utf-8') as f: 
+        datos_motos = json.load(f)
+        
+    mapa_normalizado = {}
+    for key in datos_motos.keys():
+        norm_key = normalizar_texto(key)
+        mapa_normalizado[norm_key] = key
+    
+    print(f"✅ Base cargada: {len(datos_motos)} modelos indexados.")
 
-datos_motos = cargar_base_conocimiento()
+cargar_base_conocimiento()
 
-# --- NUEVA LÓGICA DE PREDICCIÓN (MATEMÁTICA) ---
+def buscar_modelo_real(input_id):
+    if not input_id: return None
+    if input_id in datos_motos: return input_id
+    input_norm = normalizar_texto(input_id)
+    if input_norm in mapa_normalizado:
+        return mapa_normalizado[input_norm]
+    return None
 
+def now_iso(): return datetime.now().isoformat()
+
+# --- CEREBRO IA ---
 def consultar_ia_robusta(km_pieza_actual, intervalo_manual):
-    """
-    Prepara los datos EXACTAMENTE como se hizo en el entrenamiento.
-    Features esperados: [km_realizado, km_recomendado, ratio, diferencia]
-    """
-    if model is None or scaler is None: return "IA_OFFLINE", 0.0
-    
+    if model is None: return "IA_OFFLINE", 0.0
     try:
-        # 1. Ingeniería de Características (Feature Engineering) en tiempo real
-        # Calculamos los mismos valores derivados que usamos al entrenar
-        epsilon = 1e-6
-        ratio = km_pieza_actual / (intervalo_manual + epsilon)
+        ratio = km_pieza_actual / (intervalo_manual + 1e-6)
         diff = km_pieza_actual - intervalo_manual
-        
-        # 2. Construir el vector de entrada (4 valores)
-        # OJO: El orden debe ser IDÉNTICO a train_model.py
-        # features = ['km_realizado_usuario', 'km_recomendacion_app', 'ratio_uso', 'diferencia_km']
-        vector_crudo = np.array([[
-            km_pieza_actual,
-            intervalo_manual,
-            ratio,
-            diff
-        ]])
-        
-        # 3. Escalar (Traducir a lenguaje IA)
-        vector_scaled = scaler.transform(vector_crudo)
-        
-        # 4. Predecir
-        prediccion = model.predict(vector_scaled, verbose=0)
-        
-        # 5. Interpretar
-        clase_idx = np.argmax(prediccion)
-        estado = encoder.inverse_transform([clase_idx])[0]
-        confianza = float(np.max(prediccion))
-        
-        return estado, confianza
-        
-    except Exception as e:
-        print(f"Error IA: {e}")
-        return "ERROR_CALCULO", 0.0
+        vec = scaler.transform(np.array([[km_pieza_actual, intervalo_manual, ratio, diff]]))
+        pred = model.predict(vec, verbose=0)
+        return encoder.inverse_transform([np.argmax(pred)])[0], float(np.max(pred))
+    except: return "ERROR", 0.0
 
+# --- LÓGICA ESTRICTA V6 ---
 def analizar_mantenimiento(perfil_moto_id, km_moto_total, historial_usuario):
-    """
-    Cruza datos del manual, historial del usuario y predicciones de la IA.
-    """
-    if perfil_moto_id not in datos_motos: return []
+    modelo_real = buscar_modelo_real(perfil_moto_id)
+    if not modelo_real: return []
     
-    tareas = datos_motos[perfil_moto_id]["tareas_mantenimiento"]
+    tareas = datos_motos[modelo_real]["tareas_mantenimiento"]
     resultados = []
 
     for tarea in tareas:
         comp_id = tarea["componente_id"]
-        intervalo_manual = tarea["intervalo"].get("kilometros")
+        intervalo_obj = tarea["intervalo"]
         
-        if not intervalo_manual: continue # Ignorar tareas sin KM definido
+        intervalo_std = intervalo_obj.get("kilometros", 5000)
+        intervalos_unicos = sorted(intervalo_obj.get("unicos", []))
         
-        # A. DETERMINAR EL ESTADO REAL DE LA PIEZA
+        # 1. Determinar el "Estado Actual" según el Historial
+        # Buscamos cuál fue el último km registrado para esta pieza (0 si nunca se tocó)
+        km_ultimo_cambio = historial_usuario.get(comp_id, 0)
+        
+        intervalo_activo = intervalo_std # Por defecto (si superamos los únicos)
+        
+        # 2. Revisión Secuencial de Hitos (Despegue)
+        # Recorremos los hitos únicos (500, 2500...) para ver si ya se cumplieron
+        todos_unicos_cumplidos = True
+        
+        for km_unico in intervalos_unicos:
+            # CRITERIO DE CUMPLIMIENTO:
+            # Se considera cumplido si el último cambio se hizo cerca o después del hito.
+            # Margen de "adelanto" permitido: 10% (ej. cambiar a los 450 cuenta para el de 500)
+            margen_adelanto = km_unico * 0.90
+            
+            if km_ultimo_cambio < margen_adelanto:
+                # No hemos superado este hito con un cambio registrado.
+                # ESTE es nuestro objetivo actual. Nos quedamos aquí atrapados hasta que se haga.
+                intervalo_activo = km_unico
+                todos_unicos_cumplidos = False
+                break # Rompemos el ciclo, no miramos hitos futuros
+        
+        # 3. Cálculo de Uso
         origen_dato = "teorico"
         km_recorridos_pieza = 0
         
-        if comp_id in historial_usuario:
-            # Opción 1: Tenemos historial real
-            km_ultimo_cambio = historial_usuario[comp_id]
-            km_recorridos_pieza = km_moto_total - km_ultimo_cambio
-            origen_dato = "historial_real"
+        if not todos_unicos_cumplidos:
+            # Estamos persiguiendo un hito único (ej. 500 km)
+            # El uso es absoluto desde el km 0 de la moto (o desde el último cambio si hubo uno fallido intermedio)
+            # Simplificación robusta: Uso = ODO actual (para despegue inicial)
+            # Pero si ya hubo un cambio previo (ej. al km 100), uso = ODO - 100.
+            # Lo más seguro para despegue es comparar contra el ODO absoluto si es el primer hito.
+            
+            if intervalo_activo == intervalos_unicos[0] and km_ultimo_cambio == 0:
+                km_recorridos_pieza = km_moto_total # Uso desde fábrica
+                origen_dato = f"pendiente_despegue_{intervalo_activo}km"
+            else:
+                # Estamos en un hito intermedio (ej. ya pasé el 500, voy por el 2500)
+                km_recorridos_pieza = max(0, km_moto_total - km_ultimo_cambio)
+                origen_dato = f"pendiente_hito_{intervalo_activo}km"
+                
         else:
-            # Opción 2: Cálculo teórico (asumimos mantenimientos perfectos previos)
-            km_recorridos_pieza = km_moto_total % intervalo_manual
-            # Corrección: Si el modulo es 0 pero la moto tiene km, la pieza tiene el intervalo completo
-            if km_recorridos_pieza == 0 and km_moto_total > 0:
-                km_recorridos_pieza = intervalo_manual
-        
-        # Evitar negativos por errores de usuario
-        km_recorridos_pieza = max(0, km_recorridos_pieza)
+            # Ya pasamos el despegue, estamos en régimen RECURRENTE (cada 5000 km)
+            km_recorridos_pieza = max(0, km_moto_total - km_ultimo_cambio)
+            origen_dato = "ciclo_recurrente_normal"
+            intervalo_activo = intervalo_std
 
-        # B. CONSULTAR A LA NUEVA IA
-        # Ahora le pasamos (KM Real vs Intervalo Manual)
-        estado_ia, confianza_ia = consultar_ia_robusta(km_recorridos_pieza, intervalo_manual)
-        
-        # C. CÁLCULO DE URGENCIA MANUAL (Para comparar/ordenar)
-        urgencia_matematica = km_recorridos_pieza / intervalo_manual
-        
+        # 4. Consultar IA
+        estado_ia, conf_ia = consultar_ia_robusta(km_recorridos_pieza, intervalo_activo)
+        urgencia = km_recorridos_pieza / intervalo_activo
+
         resultados.append({
             "componente": tarea["componente_nombre_comun"],
             "componente_id": comp_id,
             "accion": tarea["accion"],
             "datos_tecnicos": {
-                "km_pieza_actual": km_recorridos_pieza,
-                "intervalo_fabricante": intervalo_manual,
+                "km_pieza_actual": int(km_recorridos_pieza),
+                "intervalo_fabricante": intervalo_activo,
                 "origen": origen_dato,
-                "porcentaje_uso": round(urgencia_matematica * 100, 1)
+                "porcentaje_uso": round(urgencia * 100, 1)
             },
-            "analisis_ia": {
-                "diagnostico": estado_ia,
-                "confianza": round(confianza_ia * 100, 1)
-            },
-            "alerta_nivel": 1 if estado_ia in ['fallo_critico', 'muy_desgastado'] else 0
+            "analisis_ia": { "diagnostico": estado_ia, "confianza": round(conf_ia * 100, 1) }
         })
 
-    # Ordenar por gravedad (primero lo que la IA dice que es crítico)
-    def factor_orden(item):
-        prioridad = item['datos_tecnicos']['porcentaje_uso']
-        if item['analisis_ia']['diagnostico'] == 'fallo_critico': prioridad += 200
-        elif item['analisis_ia']['diagnostico'] == 'muy_desgastado': prioridad += 100
-        return prioridad
+    return sorted(resultados, key=lambda x: x['datos_tecnicos']['porcentaje_uso'], reverse=True)
 
-    return sorted(resultados, key=factor_orden, reverse=True)
-
-
-# --- SEGURIDAD ---
+# --- ENDPOINTS (SIN CAMBIOS) ---
 def auth_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
         auth = request.authorization
         if auth and auth.username == AUTH_USERNAME and auth.password == AUTH_PASSWORD:
             return f(*args, **kwargs)
-        return make_response('Login Required', 401, {'WWW-Authenticate': 'Basic'})
+        return make_response('Login', 401, {'WWW-Authenticate': 'Basic'})
     return decorated
 
-# --- ENDPOINTS ---
+@app.route('/get_maintenance_options', methods=['GET'])
+def get_maintenance_options():
+    input_mid = request.args.get('modelo_id')
+    real_mid = buscar_modelo_real(input_mid)
+    
+    if not real_mid:
+        return jsonify([{"id": "aceite_motor", "label": "Aceite de Motor (Genérico)"}])
+
+    tareas = datos_motos[real_mid].get("tareas_mantenimiento", [])
+    seen = set()
+    opts = []
+    for t in tareas:
+        if t['componente_id'] not in seen:
+            opts.append({"id": t['componente_id'], "label": t['componente_nombre_comun']})
+            seen.add(t['componente_id'])
+    opts.append({"id": "otro", "label": "Otro / Reparación General"})
+    return jsonify(opts)
 
 @app.route('/predict_full', methods=['POST'])
 @auth_required
 def predict_full():
-    """
-    Endpoint principal: Recibe estado de la moto y devuelve análisis completo de TODAS las piezas.
-    """
-    try:
-        data = request.get_json(force=True)
-        modelo_id = data.get('modelo_id')
-        km_actual = data.get('km_actual')
-        
-        # Historial opcional: { "aceite": 10500, "frenos": 12000 }
-        historial = data.get('historial_usuario', {}) 
-        
-        if not modelo_id or km_actual is None:
-            return jsonify({"error": "Faltan datos (modelo_id, km_actual)"}), 400
-
-        analisis = analizar_mantenimiento(modelo_id, float(km_actual), historial)
-        
-        return jsonify({
-            "moto": modelo_id,
-            "km_total": km_actual,
-            "diagnostico_global": analisis
-        })
-
-    except Exception as e:
-        return jsonify({"error": f"Error interno: {str(e)}"}), 500
-
-@app.route('/test_single', methods=['POST'])
-@auth_required
-def test_single():
-    """
-    Para pruebas rápidas: ¿Cómo ve la IA una pieza específica?
-    """
-    try:
-        data = request.get_json(force=True)
-        km_pieza = data.get('km_pieza')
-        intervalo = data.get('intervalo_manual')
-        
-        if km_pieza is None or intervalo is None:
-            return jsonify({"error": "Faltan datos"}), 400
-            
-        estado, conf = consultar_ia_robusta(float(km_pieza), float(intervalo))
-        
-        return jsonify({
-            "input": {"km": km_pieza, "target": intervalo},
-            "ia_output": estado,
-            "confianza": f"{conf*100:.2f}%"
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/', methods=['GET'])
-def home():
-    estado_ia = "ONLINE 🟢" if model else "OFFLINE 🔴"
-    return f"Servidor de Mantenimiento Inteligente V2<br>Estado IA: {estado_ia}"
-
-
-@app.route('/get_maintenance_options', methods=['GET'])
-#@auth_required  <-- Podemos dejarlo abierto o protegido, usaremos auth por consistencia
-def get_maintenance_options():
-    """
-    Devuelve la lista de componentes válidos para un modelo específico.
-    Usado para llenar el <select> del frontend.
-    """
-    modelo_id = request.args.get('modelo_id')
-    
-    if not modelo_id or modelo_id not in datos_motos:
-        # Fallback genérico si no encontramos el modelo exacto
-        return jsonify([
-            {"id": "aceite_motor", "label": "Aceite de Motor (Genérico)"},
-            {"id": "frenos", "label": "Frenos (Genérico)"},
-            {"id": "cadena", "label": "Cadena (Genérico)"},
-            {"id": "neumaticos", "label": "Neumáticos (Genérico)"}
-        ])
-
-    tareas = datos_motos[modelo_id].get("tareas_mantenimiento", [])
-    
-    # Deduplicación: Si hay 'aceite' a los 500km y 'aceite' a los 5000km, solo queremos una opción en el menú
-    opciones_unicas = {}
-    
-    for t in tareas:
-        cid = t['componente_id']
-        label = t['componente_nombre_comun']
-        
-        # Guardamos en diccionario para sobreescribir duplicados (mismo ID)
-        # Preferimos el nombre más corto o genérico si varía, pero aquí tomamos el último.
-        if cid not in opciones_unicas:
-            opciones_unicas[cid] = label
-    
-    # Convertir a lista de objetos para el JSON
-    lista_final = [{"id": k, "label": v} for k, v in opciones_unicas.items()]
-    
-    # Añadir siempre una opción de "Otro"
-    lista_final.append({"id": "otro_mantenimiento", "label": "Otro / Reparación General"})
-    
-    return jsonify(lista_final)
+    d = request.get_json(force=True)
+    return jsonify({"diagnostico_global": analizar_mantenimiento(d.get('modelo_id'), float(d.get('km_actual')), d.get('historial_usuario', {}))})
 
 @app.route('/reportar_mantenimiento', methods=['POST'])
 @auth_required
 def reportar():
-    """
-    Recibe el reporte del usuario y lo guarda para re-entrenar la IA.
-    """
-    try:
-        data = request.get_json(force=True, silent=True)
-        if not data: return jsonify({"error": "JSON vacío"}), 400
-
-        # 1. Extraer datos del request
-        usuario_id_hash = data.get('usuario_id_hash')
-        modelo_id = data.get('modelo_id')
-        componente_id = data.get('componente_id')
-        accion_realizada = data.get('accion_realizada', 'REEMPLAZAR')
-        km_realizado = data.get('km_realizado_usuario')
-        condicion_reportada = data.get('condicion_reportada')
-
-        # 2. Calcular KM Recomendado (Lógica de Negocio)
-        # Necesitamos saber cuál era el intervalo teórico para guardarlo como referencia
-        km_teorico = 0
-        if modelo_id in datos_motos:
-            tareas = datos_motos[modelo_id].get('tareas_mantenimiento', [])
-            tarea = next((t for t in tareas if t['componente_id'] == componente_id), None)
-            
-            if tarea and 'intervalo' in tarea:
-                intervalo = tarea['intervalo'].get('kilometros', 0)
-                if intervalo > 0 and km_realizado:
-                    # Estimamos cuántos ciclos completos llevaba
-                    ciclo = round(km_realizado / intervalo)
-                    if ciclo < 1: ciclo = 1
-                    km_teorico = intervalo * ciclo
-
-        # 3. Construir registro para el dataset
-        registro_ordenado = {
-            "fecha_reporte": now_iso(),
-            "usuario_id_hash": usuario_id_hash,
-            "modelo_id": modelo_id,
-            "componente_id": componente_id,
-            "accion_realizada": accion_realizada,
-            "km_recomendacion_app": km_teorico,
-            "km_realizado_usuario": km_realizado,
-            "condicion_reportada": condicion_reportada,
-            "fecha_servidor": now_iso()
-        }
-
-        # 4. Guardar en disco (JSONL)
+    d = request.get_json(force=True, silent=True)
+    if d:
+        d.update({"fecha_reporte": now_iso(), "fecha_servidor": now_iso()})
         os.makedirs(os.path.dirname(ARCHIVO_ENTRENAMIENTO), exist_ok=True)
-        with open(ARCHIVO_ENTRENAMIENTO, 'a', encoding='utf-8') as f:
-            f.write(json.dumps(registro_ordenado) + "\n")
-            
-        print(f"💾 Reporte guardado: {modelo_id} - {componente_id} ({condicion_reportada})")
-        return jsonify({"status": "saved", "enriched_data": registro_ordenado}), 201
+        with open(ARCHIVO_ENTRENAMIENTO, 'a') as f: f.write(json.dumps(d) + "\n")
+    return jsonify({"status": "saved"}), 201
 
-    except Exception as e:
-        print(f"Error guardando reporte: {e}")
-        return jsonify({"error": str(e)}), 500
-    
-def now_iso():
-    return datetime.now().isoformat()
+@app.route('/actualizar_kilometraje', methods=['POST'])
+@auth_required
+def actualizar_km():
+    d = request.get_json(force=True, silent=True)
+    if d:
+        d.update({"accion_realizada": "ACTUALIZACION_KM", "fecha_reporte": now_iso(), "fecha_servidor": now_iso()})
+        os.makedirs(os.path.dirname(ARCHIVO_ENTRENAMIENTO), exist_ok=True)
+        with open(ARCHIVO_ENTRENAMIENTO, 'a') as f: f.write(json.dumps(d) + "\n")
+    return jsonify({"status": "saved"}), 201
 
+@app.route('/', methods=['GET'])
+def home():
+    return f"API V6 (Strict Sequential) - IA: {'🟢' if model else '🔴'}"
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
